@@ -376,6 +376,23 @@ export const SettingsSchema = lazySchema(() =>
         .string()
         .optional()
         .describe('Override the default model used by Claude Code'),
+      openai_base_url: z
+        .string()
+        .url()
+        .optional()
+        .describe(
+          'Base URL for OpenAI-compatible APIs (for example, https://api.openai.com/v1)',
+        ),
+      openai_api_key: z
+        .string()
+        .optional()
+        .describe('API key for OpenAI-compatible APIs'),
+      openai_model_name: z
+        .string()
+        .optional()
+        .describe(
+          'Model name used when OpenAI-compatible mode is enabled (for example, gpt-4.1)',
+        ),
       // Enterprise allowlist of models
       availableModels: z
         .array(z.string())

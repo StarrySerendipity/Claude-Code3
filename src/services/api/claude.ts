@@ -74,6 +74,7 @@ import { computeFingerprintFromMessages } from '../../utils/fingerprint.js'
 import { captureAPIRequest, logError } from '../../utils/log.js'
 import {
   createAssistantAPIErrorMessage,
+  createAssistantMessage,
   createUserMessage,
   ensureToolResultPairing,
   normalizeContentFromAPI,
@@ -255,6 +256,7 @@ import {
   type RetryContext,
   withRetry,
 } from './withRetry.js'
+import { queryOpenAICompatOnce } from './openaiCompat.js'
 
 // Define a type that represents valid JSON values
 type JsonValue = string | number | boolean | null | JsonObject | JsonArray
@@ -1774,6 +1776,69 @@ async function* queryModel(
   let isAdvisorInProgress = false
 
   try {
+    if (getAPIProvider() === 'openaiCompat') {
+      startSessionActivity('api_call')
+      queryCheckpoint('query_client_creation_start')
+      try {
+        const openAIResult = await queryOpenAICompatOnce({
+          messages,
+          systemPrompt,
+          allTools,
+        })
+        queryCheckpoint('query_client_creation_end')
+        queryCheckpoint('query_response_headers_received')
+
+        ttftMs = Date.now() - start
+        responseHeaders = new Headers()
+        streamRequestId = `openai-${randomUUID()}`
+
+        const m: AssistantMessage = {
+          message: {
+            ...openAIResult.assistantMessage,
+            content: normalizeContentFromAPI(
+              openAIResult.assistantMessage.content,
+              tools,
+              options.agentId,
+            ),
+          },
+          requestId: streamRequestId,
+          type: 'assistant',
+          uuid: randomUUID(),
+          timestamp: new Date().toISOString(),
+          ...(advisorModel && { advisorModel }),
+        }
+        newMessages.push(m)
+        usage = updateUsage(usage, openAIResult.assistantMessage.usage)
+        stopReason = openAIResult.assistantMessage.stop_reason
+        costUSD += addToTotalSessionCost(
+          calculateUSDCost(resolvedModel, usage),
+          usage,
+          options.model,
+        )
+
+        for (const event of openAIResult.events) {
+          if (event.type === 'content_block_stop') {
+            yield m
+          }
+          yield {
+            type: 'stream_event',
+            event,
+            ...(event.type === 'message_start' ? { ttftMs } : undefined),
+          }
+        }
+      } catch (error) {
+        const text = errorMessage(error)
+        const m = createAssistantMessage({
+          content: `OpenAI-compatible request failed: ${text}`,
+        })
+        m.apiError = 'api_error'
+        m.error = 'api_error'
+        newMessages.push(m)
+        yield m
+      }
+      return
+    }
+
     queryCheckpoint('query_client_creation_start')
     const generator = withRetry(
       () =>
