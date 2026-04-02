@@ -69,7 +69,7 @@ function toOpenAIInput(
     }
     out.push({
       role: msg.role as 'user' | 'assistant',
-      content: textParts.join('\n').trim() || '(empty)',
+      content: textParts.join('\n').trim(),
     })
   }
 
@@ -234,7 +234,7 @@ export async function queryOpenAICompatOnce({
     : (choice?.content ?? '')
   const toolCalls = (choice?.tool_calls ?? []).map(toolCall => ({
     id: toolCall.id || randomUUID(),
-    name: toolCall.function?.name || 'tool_call',
+    name: toolCall.function?.name || 'unnamed_function',
     input: (() => {
       const raw = toolCall.function?.arguments
       if (!raw) return {}
