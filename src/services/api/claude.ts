@@ -1829,7 +1829,7 @@ async function* queryModel(
       } catch (error) {
         const text = errorMessage(error)
         const m = createAssistantMessage({
-          content: `OpenAI-compatible request failed: ${text}`,
+          content: `OpenAI-compatible request failed: ${text}\nCheck OPENAI_API_KEY, OPENAI_BASE_URL, and OPENAI_MODEL_NAME (or the matching CLI flags/settings).`,
         })
         m.apiError = 'api_error'
         m.error = 'api_error'

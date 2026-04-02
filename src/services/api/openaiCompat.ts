@@ -113,13 +113,18 @@ function toolsToOpenAI(
 
 function toAnthropicUsage(
   usage:
-    | { input_tokens?: number; output_tokens?: number }
+    | {
+        input_tokens?: number
+        output_tokens?: number
+        prompt_tokens?: number
+        completion_tokens?: number
+      }
     | null
     | undefined,
 ): BetaUsage {
   return {
-    input_tokens: usage?.input_tokens ?? 0,
-    output_tokens: usage?.output_tokens ?? 0,
+    input_tokens: usage?.input_tokens ?? usage?.prompt_tokens ?? 0,
+    output_tokens: usage?.output_tokens ?? usage?.completion_tokens ?? 0,
     cache_creation_input_tokens: 0,
     cache_read_input_tokens: 0,
   } as BetaUsage
@@ -128,14 +133,30 @@ function toAnthropicUsage(
 function buildAssistantMessageFromOpenAI(args: {
   model: string
   outputText: string
+  toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>
   usage: BetaUsage
 }): BetaMessage {
-  const content: BetaContentBlock[] = [
-    {
+  const content: BetaContentBlock[] = []
+  if (args.outputText) {
+    content.push({
       type: 'text',
-      text: args.outputText || '',
-    } as BetaContentBlock,
-  ]
+      text: args.outputText,
+    } as BetaContentBlock)
+  }
+  for (const toolCall of args.toolCalls) {
+    content.push({
+      type: 'tool_use',
+      id: toolCall.id,
+      name: toolCall.name,
+      input: toolCall.input,
+    } as BetaContentBlock)
+  }
+  if (content.length === 0) {
+    content.push({
+      type: 'text',
+      text: '',
+    } as BetaContentBlock)
+  }
 
   return {
     id: randomUUID(),
@@ -143,7 +164,7 @@ function buildAssistantMessageFromOpenAI(args: {
     role: 'assistant',
     model: args.model,
     content,
-    stop_reason: 'end_turn',
+    stop_reason: args.toolCalls.length > 0 ? 'tool_use' : 'end_turn',
     stop_sequence: null,
     usage: args.usage,
   } as BetaMessage
@@ -160,7 +181,7 @@ export async function queryOpenAICompatOnce({
   modelOverride?: string
 }): Promise<OpenAICompatResponse> {
   const config = getOpenAICompatConfig()
-  const endpoint = `${(config.baseURL || 'https://api.openai.com/v1').replace(/\/+$/u, '')}/responses`
+  const endpoint = `${(config.baseURL || 'https://api.openai.com/v1').replace(/\/+$/u, '')}/chat/completions`
 
   const normalized = normalizeMessagesForAPI(messages, [] as unknown as Tools)
   const anthropicMessages = normalized
@@ -183,7 +204,7 @@ export async function queryOpenAICompatOnce({
     },
     body: JSON.stringify({
       model: config.model,
-      input,
+      messages: input,
       tools: toolsToOpenAI(allTools),
       parallel_tool_calls: false,
     }),
@@ -193,14 +214,43 @@ export async function queryOpenAICompatOnce({
     throw new Error(`OpenAI-compatible request failed (${responseRaw.status}): ${text}`)
   }
   const response = (await responseRaw.json()) as {
-    output_text?: string
-    usage?: { input_tokens?: number; output_tokens?: number }
+    choices?: Array<{
+      message?: {
+        content?: string | Array<{ type?: string; text?: string }>
+        tool_calls?: Array<{
+          id?: string
+          function?: { name?: string; arguments?: string }
+        }>
+      }
+    }>
+    usage?: { prompt_tokens?: number; completion_tokens?: number }
   }
+  const choice = response.choices?.[0]?.message
+  const outputText = Array.isArray(choice?.content)
+    ? choice?.content
+        .filter(part => part.type === 'text' && typeof part.text === 'string')
+        .map(part => part.text as string)
+        .join('\n')
+    : (choice?.content ?? '')
+  const toolCalls = (choice?.tool_calls ?? []).map(toolCall => ({
+    id: toolCall.id || randomUUID(),
+    name: toolCall.function?.name || 'tool_call',
+    input: (() => {
+      const raw = toolCall.function?.arguments
+      if (!raw) return {}
+      try {
+        const parsed = JSON.parse(raw) as Record<string, unknown>
+        return parsed && typeof parsed === 'object' ? parsed : {}
+      } catch {
+        return {}
+      }
+    })(),
+  }))
 
-  const outputText = response.output_text || ''
   const assistantMessage = buildAssistantMessageFromOpenAI({
     model: config.model,
-    outputText,
+    outputText: outputText || '',
+    toolCalls,
     usage: toAnthropicUsage(response.usage),
   })
 
